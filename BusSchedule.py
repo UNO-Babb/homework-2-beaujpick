@@ -2,125 +2,116 @@
 #Name: Beau Pick
 #Date:10-21-25
 #Assignment: Bus stop
+
 import datetime
+import re
+import tempfile
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-import re
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
+# Bus stop info
+STOP_ID = "1235"
+ROUTE = "18"
+DIRECTION = "EAST"
+BASE_URL = f"https://myride.ometro.com/Schedule?stopCode={STOP_ID}&routeNumber={ROUTE}&directionName={DIRECTION}"
 
 def loadURL(url):
     """
-    Loads a given URL and returns all visible text from the site.
+    Loads a given URL and returns the visible text on the page.
+    Uses a temporary user-data-dir to prevent session conflicts.
     """
     chrome_options = Options()
+    chrome_options.add_argument('--headless')
     chrome_options.add_argument('--no-sandbox')
     chrome_options.add_argument('--disable-dev-shm-usage')
-    chrome_options.add_argument("--headless")
-    chrome_options.binary_location = "/snap/bin/chromium"  # adjust if needed
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
 
-    driver = webdriver.Chrome(options=chrome_options)
+    # Temporary user data dir to avoid "already in use" error
+    temp_dir = tempfile.mkdtemp()
+    chrome_options.add_argument(f"--user-data-dir={temp_dir}")
+
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+
     driver.get(url)
-    content = driver.find_element(By.XPATH, "/html/body").text
+    content = driver.find_element(By.TAG_NAME, "body").text
     driver.quit()
-    return content
 
+    return content
 
 def loadTestPage():
     """
-    Reads a test page file to avoid repeated website calls.
+    Returns the contents of a saved test page to avoid hitting live site.
     """
     with open("testPage.txt", 'r') as page:
         contents = page.read()
     return contents
 
-
-def isLater(time1, time2):
-    """Returns True if time1 is later than time2."""
-    return time1 > time2
-
-
+# Helper functions
 def getHours(time_str):
-    """Extracts hour from a 'HH:MM AM/PM' string and converts to 24-hour format."""
-    time_obj = datetime.datetime.strptime(time_str, "%I:%M %p")
-    return time_obj.hour
-
+    """Convert HH:MM AM/PM to 24-hour int hour"""
+    dt = datetime.datetime.strptime(time_str, "%I:%M %p")
+    return dt.hour
 
 def getMinutes(time_str):
-    """Extracts minute from a 'HH:MM AM/PM' string."""
-    time_obj = datetime.datetime.strptime(time_str, "%I:%M %p")
-    return time_obj.minute
+    """Extract minutes from HH:MM AM/PM"""
+    dt = datetime.datetime.strptime(time_str, "%I:%M %p")
+    return dt.minute
 
+def isLater(time_str, now):
+    """Return True if the bus time is later than now"""
+    bus_time = now.replace(hour=getHours(time_str), minute=getMinutes(time_str), second=0, microsecond=0)
+    return bus_time > now
 
-def findBusTimes(page_text):
-    """
-    Scans visible text for valid bus times in 'HH:MM AM/PM' format.
-    Returns a list of datetime.time objects.
-    """
-    time_pattern = r'\b([0-1]?[0-9]:[0-5][0-9]\s?(AM|PM))\b'
-    matches = re.findall(time_pattern, page_text)
+def find_next_buses(page_text):
+    """Find the next two upcoming buses from the page text"""
+    # Current Central Time
+    now_utc = datetime.datetime.utcnow()
+    now = now_utc - datetime.timedelta(hours=5)  # Convert UTC → CST
 
-    times = []
-    for match in matches:
-        try:
-            t = datetime.datetime.strptime(match[0].strip(), "%I:%M %p").time()
-            times.append(t)
-        except ValueError:
-            continue
-    return times
+    # Find all times in HH:MM AM/PM format
+    times = re.findall(r"\b\d{1,2}:\d{2} [AP]M\b", page_text)
 
+    # Filter only future times
+    future_times = [t for t in times if isLater(t, now)]
 
-def getNextBusTimes(bus_times, current_time):
-    """Finds the next two bus times after the current time."""
-    upcoming = [t for t in bus_times if (t.hour, t.minute) > (current_time.hour, current_time.minute)]
-    upcoming.sort()
-
-    if len(upcoming) >= 2:
-        return upcoming[0], upcoming[1]
-    elif len(upcoming) == 1:
-        return upcoming[0], None
-    else:
+    if len(future_times) == 0:
         return None, None
 
+    next_bus = future_times[0]
+    following_bus = future_times[1] if len(future_times) > 1 else None
+    return next_bus, following_bus
 
+def minutes_until(time_str):
+    """Return minutes until the given bus time"""
+    now_utc = datetime.datetime.utcnow()
+    now = now_utc - datetime.timedelta(hours=5)  # Central Time
+    bus_time = now.replace(hour=getHours(time_str), minute=getMinutes(time_str), second=0, microsecond=0)
+    delta = bus_time - now
+    return int(delta.total_seconds() // 60)
+
+# Main program
 def main():
-    # --- Variables you can easily change ---
-    STOP_ID = "1235"
-    ROUTE = "18"
-    DIRECTION = "EAST"
+    print(f"Bus Stop: {STOP_ID}, Route: {ROUTE}, Direction: {DIRECTION}")
 
-    # Build URL dynamically
-    url = f"https://myride.ometro.com/Schedule?stopCode=1235&date=2025-10-22&routeNumber=18&directionName=EAST"
+    page_text = loadURL(BASE_URL)
+    # page_text = loadTestPage()  # Uncomment to test with saved page
 
-    # --- Load visible content from the website ---
-    page_text = loadURL(url)
-    # page_text = loadTestPage()  # use this for testing
+    next_bus, following_bus = find_next_buses(page_text)
 
-    # --- Extract times ---
-    bus_times = findBusTimes(page_text)
+    now_ct = datetime.datetime.utcnow() - datetime.timedelta(hours=5)
+    print("Current Time:", now_ct.strftime("%I:%M %p"))
 
-    if not bus_times:
-        print("No bus times found on the page.")
-        return
-
-    # --- Current time in Central Time ---
-    utc_now = datetime.datetime.utcnow()
-    central_now = utc_now - datetime.timedelta(hours=5)  # adjust from GMT to CST/CDT
-    current_time = central_now.time()
-
-    next1, next2 = getNextBusTimes(bus_times, current_time)
-
-    print(f"Current Time: {central_now.strftime('%I:%M %p')}")
-
-    if next1:
-        delta1 = datetime.datetime.combine(datetime.date.today(), next1) - datetime.datetime.combine(datetime.date.today(), current_time)
-        print(f"The next bus will arrive in {int(delta1.total_seconds() / 60)} minutes at {next1.strftime('%I:%M %p')}.")
+    if next_bus:
+        print(f"The next bus will arrive in {minutes_until(next_bus)} minutes.")
     else:
-        print("No upcoming buses today.")
+        print("No upcoming buses found today.")
 
-    if next2:
-        delta2 = datetime.datetime.combine(datetime.date.today(), next2) - datetime.datetime.combine(datetime.date.today(), current_time)
-        print(f"The following bus will arrive in {int(delta2.total_seconds() / 60)} minutes at {next2.strftime('%I:%M %p')}.")
+    if following_bus:
+        print(f"The following bus will arrive in {minutes_until(following_bus)} minutes.")
 
-
-main()
+if __name__ == "__main__":
+    main()
